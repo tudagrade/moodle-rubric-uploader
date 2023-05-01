@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Upload Rubrics</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-eOJMYsd53ii+scO/bJGFsiCZc+5NDVN2yr8+0RDqr0Ql0h+rP48ckxlpbzKgwra6" crossorigin="anonymous">
+</head>
+<body>
+    <div id="app" class="container">
+        <h1>Upload Rubrics</h1>
+        <form action="" v-if="step === 'rubric_form'" v-on:submit.stop.prevent="upload">
+            <div class="alert alert-primary" role="alert">
+                This page uses non-standard APIs and has been tested with Chromium-based browsers only. It may not work in other browsers.
+            </div>
+            <div class="mb-3">
+                <label for="assign_url" class="form-label">Moodle Assign URL</label>
+                <input type="url" v-model="assignUrl" name="assign_url" id="assign_url" class="form-control" placeholder="https://moodle.example.com/mod/assign/view.php?id=12345" />
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" value="" id="sendNotifications" v-model="sendNotifications" />
+                    <label class="form-check-label" for="sendNotifications">
+                        Send notifications
+                    </label>
+                </div>
+            </div>
+            <div class="mb-3" v-on:dragenter.prevent v-on:dragover.prevent v-on:drop.stop.prevent="readDroppedDirectory">
+                <div class="alert alert-dark" role="alert">
+                    <template v-if="readingDroppedDirectory">
+                        Reading files...
+                    </template>
+                    <template v-else-if="rubrics.length === 0">
+                        Drag and drop the directory "moodle-json" here.
+                    </template>
+                    <template v-else>
+                        ✅ {{rubrics.length}} rubrics read.
+                    </template>
+                </div>
+            </div>
+            <div class="text-center" v-if="assignUrl && rubrics.length > 0">
+                <button type="submit" class="btn btn-primary btn-lg">Upload Rubrics</button>
+            </div>
+        </form>
+
+        <div  v-if="step === 'uploading'">
+            <div class="progress mb-3">
+                <div class="progress-bar" role="progressbar" v-bind:style="{width: progress + '%'}" aria-valuenow="progress" aria-valuemin="0" aria-valuemax="100">{{progress}}%</div>
+            </div>
+            <div class="text-center">
+                <a href="javacript:;" class="btn btn-danger" v-on:click.stop.prevent="isCancelled = true">Cancel</a>
+            </div>
+            <!-- <pre>Test</pre> -->
+        </div>
+
+        <div v-if="step === 'finished'">
+            <div class="alert alert-success" role="alert" v-if="failedSubmissions.length === 0">
+                The Rubric has been successfully uploaded.
+            </div>
+            <div class="alert alert-danger" role="alert" v-else>
+                <table class="table table-bordered">
+                    <thead>
+                        <tr>
+                            <th>First name</th>
+                            <th>Last name</th>
+                            <th>TU-ID</th>
+                            <th>Error</th>
+                            <th>Total points</th>
+                            <th>Feedback</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr v-for="submission in failedSubmissions">
+                            <tr>
+                                <td>{{submission.submissionInfo.firstName}}</td>
+                                <td>{{submission.submissionInfo.lastName}}</td>
+                                <td>{{submission.submissionInfo.studentId}}</td>
+                                <td>{{submission.error}}</td>
+                                <td>{{submission.totalPoints}}</td>
+                                <td>{{submission.feedbackComment}}</td>
+                            </tr>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/vue@3.0.11/dist/vue.global.js"></script>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js" integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script>
+    <script>
+        // Specify the Moodle course ID here.
+        const MOODLE_COURSE_ID = 0000;
+
+        // Specify the ID of the Moodle report which maps student IDs (TU-IDs) to Moodle user IDs here.
+        const MOODLE_USER_ID_REPORT_ID = 000;
+
+        // ==========================================================
+        
+        // Validate configuration
+        if (!Number.isInteger(MOODLE_COURSE_ID) || MOODLE_COURSE_ID <= 0) {
+            const errorMessage = 'The constant MOODLE_COURSE_ID has not been set to valid value. Please open rubric-uploader.html and update its value.';
+            alert(errorMessage);
+            throw new Error(errorMessage);
+        }
+
+        if (!Number.isInteger(MOODLE_USER_ID_REPORT_ID) || MOODLE_USER_ID_REPORT_ID <= 0) {
+            const errorMessage = 'The constant MOODLE_USER_ID_REPORT_ID has not been set to valid value. Please open rubric-uploader.html and update its value.';
+            alert(errorMessage);
+            throw new Error(errorMessage);
+        }
+
+        // Read dropped directories with more than 100 files.
+        // Source: https://stackoverflow.com/a/53058574
+        // Drop handler function to get all files
+        async function getAllFileEntries(dataTransferItemList) {
+            let fileEntries = [];
+            // Use BFS to traverse entire directory/file structure
+            let queue = [];
+            // Unfortunately dataTransferItemList is not iterable i.e. no forEach
+            for (let i = 0; i < dataTransferItemList.length; i++) {
+                queue.push(dataTransferItemList[i].webkitGetAsEntry());
+            }
+            while (queue.length > 0) {
+                let entry = queue.shift();
+                if (entry.isFile) {
+                    fileEntries.push(entry);
+                } else if (entry.isDirectory) {
+                    let reader = entry.createReader();
+                    queue.push(...await readAllDirectoryEntries(reader));
+                }
+            }
+            return fileEntries;
+        }
+
+        // Get all the entries (files or sub-directories) in a directory by calling readEntries until it returns empty array
+        async function readAllDirectoryEntries(directoryReader) {
+            let entries = [];
+            let readEntries = await readEntriesPromise(directoryReader);
+            while (readEntries.length > 0) {
+                entries.push(...readEntries);
+                readEntries = await readEntriesPromise(directoryReader);
+            }
+            return entries;
+        }
+
+        // Wrap readEntries in a promise to make working with readEntries easier
+        async function readEntriesPromise(directoryReader) {
+            try {
+                return await new Promise((resolve, reject) => {
+                    directoryReader.readEntries(resolve, reject);
+                });
+            } catch (err) {
+                console.log(err);
+            }
+        }
+
+        const fileReader = new FileReader();
+        async function readFileAsText(file) {
+            return new Promise((resolve, reject) => {
+                fileReader.onload = function() {
+                    resolve(fileReader.result);
+                };
+                fileReader.onerror = function() {
+                    reject(fileReader.error);
+                };
+                fileReader.readAsText(file);
+            });
+        }
+
+        // Source:
+        // https://stackoverflow.com/a/53113059
+        async function getFile(fileEntry) {
+            try {
+                return await new Promise((resolve, reject) => fileEntry.file(resolve, reject));
+            } catch (err) {
+                console.log(err);
+            }
+        }
+
+        var app = Vue.createApp({
+            data: function() {
+                return {
+                    step: "rubric_form",
+                    readingDroppedDirectory: false,
+                    parsingFiles: false,
+                    progress: 0,
+                    assignUrl: "",
+                    rubrics: [],
+                    isCancelled: false,
+                    failedSubmissions: [],
+                    sendNotifications: false
+                }
+            },
+            methods: {
+                readDroppedDirectory: async function(event) {
+                    this.readDroppedDirectory = true;
+                    let items = await getAllFileEntries(event.dataTransfer.items);
+                    console.log(`Found ${items.length} files`);
+                    for (let fileEntry of items) {
+                        this.rubrics.push(JSON.parse(await readFileAsText(await getFile(fileEntry))));
+                    }
+                    console.log(`Read ${this.rubrics.length} rubrics.`);
+                    this.readDroppedDirectory = false;
+                },
+                upload: async function() {
+                    // [{"index":0,"methodname":"mod_assign_submit_grading_form","args":{"assignmentid":"3138","userid":11235,"jsonformdata":"\"id=32606&rownum=0&useridlistid=&attemptnumber=-1&ajax=0&userid=0&sendstudentnotifications=true&action=submitgrade&sesskey=qx3DGjyK9J&_qf__mod_assign_grade_form_11235=1&grade=10&assignfeedbackcomments_editor[text]=%3Cp%20dir%3D%22ltr%22%20style%3D%22text-align%3A%20left%3B%22%3E%3Ctable%20border%3D%220%22%20cellpadding%3D%220%22%20cellspacing%3D%220%22%20width%3D%22192%22%3E%0D%0A%0D%0A%20%3Ccolgroup%3E%3Ccol%20width%3D%2264%22%20span%3D%223%22%3E%0D%0A%20%3C%2Fcolgroup%3E%3Ctbody%3E%3Ctr%20height%3D%2219%22%3E%0D%0A%20%20%3Ctd%20height%3D%2219%22%20width%3D%2264%22%3EA%3C%2Ftd%3E%0D%0A%20%20%3Ctd%20width%3D%2264%22%3EB%3C%2Ftd%3E%0D%0A%20%20%3Ctd%20width%3D%2264%22%3EC%3C%2Ftd%3E%0D%0A%20%3C%2Ftr%3E%0D%0A%20%3Ctr%20height%3D%2219%22%3E%0D%0A%20%20%3Ctd%20height%3D%2219%22%20align%3D%22right%22%3E1%3C%2Ftd%3E%0D%0A%20%20%3Ctd%20align%3D%22right%22%3E2%3C%2Ftd%3E%0D%0A%20%20%3Ctd%20align%3D%22right%22%3E3%3C%2Ftd%3E%0D%0A%20%3C%2Ftr%3E%0D%0A%20%3Ctr%20height%3D%2219%22%3E%0D%0A%20%20%3Ctd%20height%3D%2219%22%20align%3D%22right%22%3E1%3C%2Ftd%3E%0D%0A%20%20%3Ctd%20align%3D%22right%22%3E2%3C%2Ftd%3E%0D%0A%20%20%3Ctd%20align%3D%22right%22%3E3%3C%2Ftd%3E%0D%0A%20%3C%2Ftr%3E%0D%0A%20%3Ctr%20height%3D%2219%22%3E%0D%0A%20%20%3Ctd%20height%3D%2219%22%20align%3D%22right%22%3E1%3C%2Ftd%3E%0D%0A%20%20%3Ctd%20align%3D%22right%22%3E2%3C%2Ftd%3E%0D%0A%20%20%3Ctd%20align%3D%22right%22%3E3%3C%2Ftd%3E%0D%0A%20%3C%2Ftr%3E%0D%0A%20%3Ctr%20height%3D%2219%22%3E%0D%0A%20%20%3Ctd%20height%3D%2219%22%20align%3D%22right%22%3E1%3C%2Ftd%3E%0D%0A%20%20%3Ctd%20align%3D%22right%22%3E2%3C%2Ftd%3E%0D%0A%20%20%3Ctd%20align%3D%22right%22%3E3%3C%2Ftd%3E%0D%0A%20%3C%2Ftr%3E%0D%0A%20%3Ctr%20height%3D%2219%22%3E%0D%0A%20%20%3Ctd%20height%3D%2219%22%20align%3D%22right%22%3E1%3C%2Ftd%3E%0D%0A%20%20%3Ctd%20align%3D%22right%22%3E2%3C%2Ftd%3E%0D%0A%20%20%3Ctd%20align%3D%22right%22%3E3%3C%2Ftd%3E%0D%0A%20%3C%2Ftr%3E%0D%0A%20%3Ctr%20height%3D%2219%22%3E%0D%0A%20%20%3Ctd%20height%3D%2219%22%20align%3D%22right%22%3E1%3C%2Ftd%3E%0D%0A%20%20%3Ctd%20align%3D%22right%22%3E2%3C%2Ftd%3E%0D%0A%20%20%3Ctd%20align%3D%22right%22%3E3%3C%2Ftd%3E%0D%0A%20%3C%2Ftr%3E%0D%0A%0D%0A%3C%2Ftbody%3E%3C%2Ftable%3E%3Cbr%3E%3C%2Fp%3E&assignfeedbackcomments_editor%5Bformat%5D=1&assignfeedbackcomments_editor%5Bitemid%5D=209555750\""}}]
+                    this.step = 'uploading';
+                    var assignId = this.assignUrl.match(/(?<=\/mod\/assign\/view\.php\?id=)\d+/)[0];
+                    var assignmentId = $(await $.get(`https://moodle.informatik.tu-darmstadt.de/mod/assign/view.php?id=${assignId}&action=grader`)).find('[data-assignmentid]').data('assignmentid');
+                    var sesskey = $(await $.get("https://moodle.informatik.tu-darmstadt.de/")).find('a[href^="https://moodle.informatik.tu-darmstadt.de/login/logout.php?"]').attr('href').split("sesskey=")[1];
+                    var userIdTable = {};
+                    var reportPage = await $.get(`https://moodle.informatik.tu-darmstadt.de/blocks/configurable_reports/viewreport.php?id=${MOODLE_USER_ID_REPORT_ID}&courseid=${MOODLE_COURSE_ID}`);
+                    $(reportPage).find('#reporttable>tbody>tr').toArray().map(tr => ({tuId: tr.children[0].innerText, userId: tr.children[1].innerText})).forEach(entry => userIdTable[entry.tuId] = entry.userId);
+                    console.log(`User ID table: (${Object.keys(userIdTable).length} entries)`);
+                    console.log(userIdTable);
+
+                    for (var i = 0; i < this.rubrics.length; i++) {
+                        this.progress = Math.ceil(100 * i / this.rubrics.length);
+                        let rubric = this.rubrics[i];
+                        if (this.isCancelled)
+                            break;
+                        const userId = userIdTable[rubric.submissionInfo.studentId];
+
+                        if (typeof userId === 'undefined') {
+                            rubric.error = 'userId could not be found in TU ID report.';
+                            console.log(`User ID for student ID ${rubric.submissionInfo.studentId} could not be found.`);
+                            this.failedSubmissions.push(rubric);
+                            continue;
+                        }
+
+                        var formData = new FormData();
+                        formData.append('id', assignId);
+                        formData.append('rownum', '0');
+                        formData.append('useridlistid', '');
+                        formData.append('attemptnumber', '-1');
+                        formData.append('ajax', '0');
+                        formData.append('userid', '0');
+                        if (this.sendNotifications) {
+                            formData.append('sendstudentnotifications', 'true');
+                        } else {
+                            formData.append('sendstudentnotifications', 'false');
+                        }
+                        formData.append('action', 'submitgrade');
+                        formData.append('sesskey', sesskey);
+                        formData.append('_qf__mod_assign_grade_form_' + userId, '1');
+                        formData.append('grade', rubric.totalPoints);
+                        formData.append('assignfeedbackcomments_editor[text]', rubric.feedbackComment);
+                        formData.append('assignfeedbackcomments_editor[format]', '1');
+                        formData.append('assignfeedbackcomments_editor[itemid]', '0');
+
+                        var payload = [{
+                            index: 0,
+                            methodname: 'mod_assign_submit_grading_form',
+                            args: {
+                                assignmentid: assignmentId,
+                                userid: userId,
+                                jsonformdata: '"' + new URLSearchParams(formData).toString() + '"'
+                            }
+                        }];
+
+                        try {
+                            var response = await $.ajax({
+                                type: 'POST',
+                                url: `https://moodle.informatik.tu-darmstadt.de/lib/ajax/service.php?sesskey=${sesskey}&info=mod_assign_submit_grading_form`,
+                                data: JSON.stringify(payload),
+                                contentType: 'application/json',
+                                dataType: 'json'
+                            });
+
+                            if (typeof response !== 'object' || response[0].error !== false) {
+                                rubric.error = JSON.stringify(response[0].error);
+                                console.log(`An error occurred whilst trying to update the grade for ${rubric.submissionInfo.studentId} in Moodle:`);
+                                console.log(response[0].error);
+                                this.failedSubmissions.push(rubric);
+                            }
+                        } catch (e) {
+                            console.log(e);
+                            rubric.error = 'Network request to set grade failed.';
+                            this.failedSubmissions.push(rubric);
+                        }
+                    }
+
+                    this.step = 'finished';
+                }
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
